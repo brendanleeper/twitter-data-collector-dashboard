@@ -55,10 +55,12 @@ def get_or_none(classmodel, **kwargs):
         return classmodel.objects.get(**kwargs)
     except classmodel.DoesNotExist:
         return None
-
-# limiter which manages all requests
-# queue of requests to fill
-# every 15 mins, checks the queue
+    
+def has_next_token(response):
+    if response['meta']:
+        if response['meta']['next_token'] is not None:
+            return True
+    return False
 
 class Collector(Thread):
     def __init__(self):
@@ -70,6 +72,15 @@ class Collector(Thread):
             'followers': followers,
             'following': following,
             'user_lookup': user_lookup
+        }
+        self._processing_func = { # the function to use for processing the result, by endpoint
+            'liking_users': liking_users,
+            'retweets': retweets,
+            'tweet_info': parse_tweet,
+            'liked_tweets': liked_tweets,
+            'followers': followers,
+            'following': following,
+            'user_lookup': parse_user_full
         }
         Thread.__init__(self)
         self.daemon = True
@@ -87,19 +98,33 @@ class Collector(Thread):
             print('collector loop')
             wake_time = now()
             tasks = ApiTasks.objects.filter(Q(hold_until__isnull=True) | Q(hold_until__lt=now())).order_by('created')
-            for t in tasks:
+            for t in tasks: # kinda bad, can't append tasks (for tasks with next_tokens for example)
                 req = request(*self._functions[t.task](t.task_id))
+                if t.args is not None and type(t.args) is dict:
+                    if 'next_token' in t.args.keys():
+                        req.params['pagination_token'] = t.args['next_token']
                 print(req)
                 print(t.created)
                 passed, hold = self.ratelimiter.check_request(req)
                 if passed:
-                    parse_tweet(req.connect_to_endpoint())
+                    response = req.connect_to_endpoint()
+                    # parse the result
+                    self._processing_func[t.task](response)
                     self.ratelimiter.endpoint_used(req.endpoint)
-                    t.delete()
+                    if t.repeat_every:
+                        # repeating job, update and hold until it runs again
+                        ApiTasks.objects.filter(pk=t.pk).update(hold_until=now() + timedelta(minutes=t.repeat_every))
+                        print('re-running task %s in %d minutes' % (req, t.repeat_every))
+                    elif has_next_token(response):
+                        # bad, only does a pagination task once per minute
+                        ApiTasks.objects.filter(pk=t.pk).update(args={'next_token': response['meta']['pagination_token']})
+                    else:
+                        t.delete() # one off job
                 else:
                     ApiTasks.objects.filter(pk=t.pk).update(hold_until=hold)
                     print('holding on: %s' % req)
                 sleep(1)
+            # TODO: merge into one loop, make sleep only happen if there's nothing in the apitasks queue to act on
             snooze = ((wake_time + timedelta(seconds=60-(now() - wake_time).total_seconds()))-wake_time).total_seconds()
             print('sleeping for: {}'.format(snooze))
             sleep(snooze)
@@ -107,7 +132,6 @@ class Collector(Thread):
     def stop(self):
         self._is_running = False
         print('Collector stopping')
-
 
 def parse_tweet(response):
     from .models import Tweet, User, Media, TweetMetrics
@@ -195,3 +219,6 @@ def parse_user_full(response):
     u, created = User.objects.update_or_create(id=response['data']['id'], defaults=defaults)
     UserMetrics.objects.update_or_create(user_id=response['data']['id'], defaults=defaults_metrics)
     return u
+
+def parse_user_followings(response):
+    pass

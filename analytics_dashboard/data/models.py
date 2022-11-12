@@ -86,22 +86,6 @@ class TweetLikes(models.Model):
         unique_together = ('tweet_id', 'user_id')
         verbose_name = 'Like'
 
-class WatchedTweets(models.Model):
-    tweet_id = models.ForeignKey(Tweet, on_delete=models.DO_NOTHING)
-    check_frequency = models.IntegerField(default=60) # minutes
-    watched_on = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        verbose_name_plural = 'Watched Tweets'
-
-class WatchedUsers(models.Model):
-    user_id = models.ForeignKey(User, on_delete=models.DO_NOTHING)
-    check_frequency = models.IntegerField(default=60) # minutes
-    watched_on = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        verbose_name_plural = 'Watched Users'
-
 class ApiTasks(models.Model):
     class TaskType(models.TextChoices):
         LIKING_USERS = 'liking_users',
@@ -116,5 +100,6 @@ class ApiTasks(models.Model):
     args = models.CharField(max_length=30, blank=True, null=True)
     created = models.DateTimeField(auto_now_add=True)
     hold_until = models.DateTimeField(blank=True, null=True)
+    repeat_every = models.IntegerField(blank=True, null=True)
     class Meta:
         verbose_name_plural = 'API Tasks'
